@@ -136,6 +136,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtWidgets/QApplication>
 
 // AyuGram includes
+#include "ayu/dialogs/chats_selection.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
 #include "ayu/ui/context_menu/context_menu.h"
@@ -314,6 +315,7 @@ private:
 	void addToggleFolder();
 	void addToggleUnreadMark();
 	void addToggleArchive();
+	void addChatsSelectionActions();
 	void addClearHistory();
 	void addDeleteChat();
 	void addLeaveChat();
@@ -1849,6 +1851,8 @@ void Filler::addVideoChat() {
 }
 
 void Filler::fillContextMenuActions() {
+	addChatsSelectionActions();
+	_addAction(PeerMenuCallback::Args{ .isSeparator = true });
 	addNewWindow();
 	addUngroup();
 	addHidePromotion();
@@ -1949,10 +1953,97 @@ void Filler::fillScheduledActions() {
 	addCreateTodoList();
 }
 
+void Filler::addChatsSelectionActions() {
+	const PeerId selfId = _controller->session().userId();
+	const auto selection = &Ayu::ChatsSelection::instance();
+	if (!selection->active() || (selection->selfId() != selfId)) {
+		_addAction(tr::ayu_ChatSelectMode(tr::now), [=] {
+			selection->begin(selfId);
+		}, &st::menuIconSelect);
+		return;
+	}
+	const auto bulk = Ayu::ChatsBulk{
+		.controller = _controller,
+		.filterId = _request.filterId,
+	};
+	const auto addPick = [&](
+			Ayu::ChatPick pick,
+			const QString &text,
+			const style::icon *icon) {
+		_addAction(text, [=] {
+			selection->selectMatching(pick);
+		}, icon);
+	};
+	addPick(
+		Ayu::ChatPick::All,
+		tr::ayu_ChatSelectAll(tr::now),
+		&st::menuIconShowAll);
+	addPick(
+		Ayu::ChatPick::Groups,
+		tr::ayu_ChatSelectGroups(tr::now),
+		&st::menuIconGroups);
+	addPick(
+		Ayu::ChatPick::Channels,
+		tr::ayu_ChatSelectChannels(tr::now),
+		&st::menuIconChannel);
+	addPick(
+		Ayu::ChatPick::Bots,
+		tr::ayu_ChatSelectBots(tr::now),
+		&st::menuIconBot);
+	addPick(
+		Ayu::ChatPick::Private,
+		tr::ayu_ChatSelectPrivate(tr::now),
+		&st::menuIconChats);
+	_addAction(tr::ayu_ChatInvert(tr::now), [=] {
+		selection->invert();
+	}, &st::menuIconReorder);
+	_addAction(tr::ayu_ChatClear(tr::now), [=] {
+		selection->clearSelected();
+	}, &st::menuIconCancel);
+	_addAction(tr::ayu_ChatExit(tr::now), [=] {
+		selection->end();
+	}, &st::menuIconRemove);
+	_addAction(PeerMenuCallback::Args{ .isSeparator = true });
+	_addAction(tr::ayu_ChatMute(tr::now), [=] {
+		Ayu::BulkMute(bulk, true);
+	}, &st::menuIconMute);
+	_addAction(tr::ayu_ChatUnmute(tr::now), [=] {
+		Ayu::BulkMute(bulk, false);
+	}, &st::menuIconUnmute);
+	_addAction(tr::ayu_ChatArchive(tr::now), [=] {
+		Ayu::BulkArchive(bulk, true);
+	}, &st::menuIconArchive);
+	_addAction(tr::ayu_ChatUnarchive(tr::now), [=] {
+		Ayu::BulkArchive(bulk, false);
+	}, &st::menuIconUnarchive);
+	_addAction(tr::ayu_ChatMarkRead(tr::now), [=] {
+		Ayu::BulkMarkRead(bulk);
+	}, &st::menuIconMarkRead);
+	_addAction(tr::ayu_ChatMarkUnread(tr::now), [=] {
+		Ayu::BulkMarkUnread(bulk);
+	}, &st::menuIconMarkUnread);
+	_addAction(tr::ayu_ChatPin(tr::now), [=] {
+		Ayu::BulkPin(bulk, true);
+	}, &st::menuIconPin);
+	_addAction(tr::ayu_ChatUnpin(tr::now), [=] {
+		Ayu::BulkPin(bulk, false);
+	}, &st::menuIconUnpin);
+	_addAction(tr::ayu_ChatClearBots(tr::now), [=] {
+		Ayu::BulkClearBotsHistory(bulk);
+	}, &st::menuIconClear);
+	_addAction({
+		.text = tr::ayu_ChatDelete(tr::now),
+		.handler = [=] { Ayu::BulkDelete(bulk); },
+		.icon = &st::menuIconDeleteAttention,
+		.isAttention = true,
+	});
+}
+
 void Filler::fillArchiveActions() {
 	Expects(_folder != nullptr);
 
 	if (_folder->id() != Data::Folder::kId) {
+		addChatsSelectionActions();
 		return;
 	}
 	const auto controller = _controller;
@@ -1961,6 +2052,8 @@ void Filler::fillArchiveActions() {
 		_addAction(tr::lng_dlg_filter(tr::now), [=] {
 			controller->searchInChat(folder);
 		}, &st::menuIconSearch);
+		_addAction(PeerMenuCallback::Args{ .isSeparator = true });
+		addChatsSelectionActions();
 	} else {
 		addNewWindow();
 

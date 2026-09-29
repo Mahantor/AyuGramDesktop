@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_inner_widget.h"
 
+#include "ayu/dialogs/chats_selection.h"
 #include "dialogs/dialogs_three_state_icon.h"
 #include "dialogs/ui/chat_search_empty.h"
 #include "dialogs/ui/chat_search_in.h"
@@ -117,6 +118,15 @@ constexpr auto kStartDragToFilterThresholdX = kStartReorderThreshold;
 constexpr auto kStartDragToFilterThresholdY = 75;
 constexpr auto kQueryPreviewLimit = 32;
 constexpr auto kPreviewPostsLimit = 3;
+
+constexpr auto kAyuSelectionHaloInset = 5;
+constexpr auto kAyuSelectionHaloRadius = 12.;
+constexpr auto kAyuSelectionHaloEdgeWidth = 2.;
+constexpr auto kAyuSelectionHaloBloomWidth = 6.;
+constexpr auto kAyuSelectionHaloGlowWidth = 12.;
+constexpr auto kAyuSelectionHaloFillAlpha = 40;
+constexpr auto kAyuSelectionHaloBloomAlpha = 90;
+constexpr auto kAyuSelectionHaloGlowAlpha = 35;
 
 [[nodiscard]] uint64 RowsCacheKey(Entry *entry) {
 	return uint64(reinterpret_cast<quintptr>(entry));
@@ -319,6 +329,11 @@ InnerWidget::InnerWidget(
 	setAccessibleName(tr::lng_recent_chats(tr::now));
 
 	_communityViewable.setRepaint([=] { update(); });
+
+	Ayu::ChatsSelection::instance().changes(
+	) | rpl::on_next([=] {
+		update();
+	}, lifetime());
 
 	style::PaletteChanged(
 	) | rpl::on_next([=] {
@@ -1047,6 +1062,13 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 		// We translate painter down, but it'll be cropped below rect.
 		p.fillRect(rect(), context.currentBg);
 	});
+	if ((_state == WidgetState::Default)
+		&& !_openedForum
+		&& !_savedSublists) {
+		Ayu::ChatsSelection::instance().syncCandidates(
+			session().userId(),
+			_shownList);
+	}
 	const auto paintRow = [&](
 			not_null<Row*> row,
 			bool selected,
@@ -1118,6 +1140,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 				cacheRatio,
 				[](QImage &) {});
 			paintCachedRowOverlays(p, row, cacheKey, context);
+			paintSelectionHalo(p, row, context);
 			return;
 		}
 
@@ -1233,6 +1256,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 		} else {
 			Ui::RowPainter::Paint(p, row, videoUserpic, context);
 		}
+		paintSelectionHalo(p, row, context);
 		if (context.quickActionContext) {
 			context.quickActionContext = nullptr;
 		}
@@ -3800,6 +3824,61 @@ void InnerWidget::paintAnimatedPreview(
 	p.drawImage(geometry.topLeft(), cached.band);
 }
 
+void InnerWidget::paintSelectionHalo(
+		Painter &p,
+		not_null<Row*> row,
+		const Ui::PaintContext &context) {
+	const auto &selection = Ayu::ChatsSelection::instance();
+	if (!selection.active()) {
+		return;
+	}
+	const auto history = row->history();
+	if (!history || !selection.contains(history->peer->id)) {
+		return;
+	}
+	const auto accent = st::windowActiveTextFg->c;
+	const auto outer = QRectF(QRect(
+		kAyuSelectionHaloInset,
+		2,
+		context.width - kAyuSelectionHaloInset * 2,
+		row->height() - 4));
+	auto glow = QColor(accent);
+	glow.setAlpha(kAyuSelectionHaloGlowAlpha);
+	auto bloom = QColor(accent);
+	bloom.setAlpha(kAyuSelectionHaloBloomAlpha);
+	auto fill = QColor(accent);
+	fill.setAlpha(kAyuSelectionHaloFillAlpha);
+	auto edge = QColor(accent);
+	p.save();
+	p.setRenderHint(QPainter::Antialiasing);
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(glow, kAyuSelectionHaloGlowWidth));
+	p.drawRoundedRect(outer, kAyuSelectionHaloRadius, kAyuSelectionHaloRadius);
+	p.setPen(QPen(bloom, kAyuSelectionHaloBloomWidth));
+	p.drawRoundedRect(outer, kAyuSelectionHaloRadius, kAyuSelectionHaloRadius);
+	p.setPen(Qt::NoPen);
+	p.setBrush(fill);
+	p.drawRoundedRect(
+		outer.adjusted(
+			kAyuSelectionHaloEdgeWidth / 2.,
+			kAyuSelectionHaloEdgeWidth / 2.,
+			-kAyuSelectionHaloEdgeWidth / 2.,
+			-kAyuSelectionHaloEdgeWidth / 2.),
+		kAyuSelectionHaloRadius - kAyuSelectionHaloEdgeWidth,
+		kAyuSelectionHaloRadius - kAyuSelectionHaloEdgeWidth);
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(edge, kAyuSelectionHaloEdgeWidth));
+	p.drawRoundedRect(
+		outer.adjusted(
+			kAyuSelectionHaloEdgeWidth / 2.,
+			kAyuSelectionHaloEdgeWidth / 2.,
+			-kAyuSelectionHaloEdgeWidth / 2.,
+			-kAyuSelectionHaloEdgeWidth / 2.),
+		kAyuSelectionHaloRadius - kAyuSelectionHaloEdgeWidth,
+		kAyuSelectionHaloRadius - kAyuSelectionHaloEdgeWidth);
+	p.restore();
+}
+
 void InnerWidget::updateSelectedRow(Key key) {
 	if (key) {
 		invalidateCachedRow(RowsCacheKey(key.entry()));
@@ -5928,6 +6007,16 @@ bool InnerWidget::chooseRow(
 		return row;
 	};
 	auto chosen = modifyChosenRow(computeChosenRow(), modifiers);
+	if (chosen.key
+		&& _state == WidgetState::Default
+		&& !_openedForum
+		&& !_savedSublists
+		&& Ayu::ChatsSelection::instance().active()) {
+		if (const auto history = chosen.key.history()) {
+			Ayu::ChatsSelection::instance().toggle(history->peer->id);
+			return true;
+		}
+	}
 	if (chosen.key) {
 		if (IsServerMsgId(chosen.message.fullId.msg)) {
 			session().local().saveRecentSearchHashtags(_filter);
@@ -6661,6 +6750,10 @@ bool InnerWidget::processKeyDispatch(QKeyEvent *e) {
 
 void InnerWidget::keyPressEvent(QKeyEvent *e) {
 	if (processKeyDispatch(e)) {
+		return;
+	} else if (e->key() == Qt::Key_Escape
+		&& Ayu::ChatsSelection::instance().active()) {
+		Ayu::ChatsSelection::instance().end();
 		return;
 	} else if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
 		chooseRow();
