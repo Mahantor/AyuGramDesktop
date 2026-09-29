@@ -42,10 +42,6 @@ jobs:
     name: AyuGram.exe (Debug x64)
     runs-on: windows-2022
     timeout-minutes: 330
-    env:
-      # Same generation key as the prepare workflow; TOOLSET is the toolset that was actually
-      # selected, which can fall back to the installed default.
-      CACHE_GEN: ayu-winlibs-${{ env.QT }}-${{ env.TOOLSET }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,8 +74,9 @@ jobs:
         shell: powershell
         run: |
           $win64 = Join-Path $env:GITHUB_WORKSPACE 'Libraries\win64'
-          $required = @("Qt-$env:QT", 'tg_owt', 'ffmpeg', 'openssl3', 'zlib', 'breakpad',
-                        'protobuf', 'tde2e', 'mozjpeg', 'libvpx')
+          # Every name here is a folder the linker of a successful local build actually read from.
+          $required = @("Qt-$env:QT", 'tg_owt', 'tg_angle', 'ffmpeg', 'openssl3', 'zlib', 'breakpad',
+                        'protobuf', 'tde2e', 'mozjpeg', 'libvpx', 'local')
           $missing = @()
           foreach ($r in $required) {
             if (-not (Test-Path (Join-Path $win64 $r))) { $missing += $r }

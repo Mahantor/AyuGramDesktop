@@ -48,21 +48,23 @@ runs:
         $toolsetName = $toolset.Name
         Write-Host "using toolset v$toolsetName"
 
-        # ATL ships per toolset, so its component id carries both the MSVC and the VS version.
+        # ATL ships per toolset, so its component id carries both the MSVC major.minor (14.44, not
+        # the 14.44.35207 folder name) and the VS major.minor.
         $atlInclude = Join-Path $toolset.FullName 'atlmfc\include\atlbase.h'
         if (-not (Test-Path $atlInclude)) {
           $vs = [version]$vsVersion
-          $atlId = "Microsoft.VisualStudio.Component.VC.$toolsetName.$($vs.Major).$($vs.Minor).ATL"
+          $msvc = [version]$toolsetName
+          $atlId = "Microsoft.VisualStudio.Component.VC.$($msvc.Major).$($msvc.Minor).$($vs.Major).$($vs.Minor).ATL"
           Write-Host "ATL missing for v$toolsetName - installing $atlId"
           $installer = Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vs_installer.exe'
           if (-not (Test-Path $installer)) { throw "vs_installer not found: $installer" }
-          $args = @('modify', '--installPath', "`"$vsRoot`"", '--add', $atlId,
-                    '--quiet', '--norestart', '--wait', '--noweb')
-          $proc = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
+          # One quoted command line: Start-Process joins array elements with spaces but keeps the
+          # embedded quotes, which splits the install path into two arguments.
+          $base = "modify --installPath `"$vsRoot`" --add $atlId --quiet --norestart --wait"
+          $proc = Start-Process -FilePath $installer -ArgumentList "$base --noweb" -Wait -PassThru
           if ($proc.ExitCode -ne 0) {
-            Write-Warning "vs_installer exit code $($proc.ExitCode) - retrying without --noweb"
-            $proc = Start-Process -FilePath $installer `
-              -ArgumentList ($args | Where-Object { $_ -ne '--noweb' }) -Wait -PassThru
+            Write-Warning "vs_installer exit code $($proc.ExitCode) - retrying with the web feed"
+            $proc = Start-Process -FilePath $installer -ArgumentList $base -Wait -PassThru
             if ($proc.ExitCode -ne 0) { throw "ATL install failed with exit code $($proc.ExitCode)" }
           }
           if (-not (Test-Path $atlInclude)) { throw "still no $atlInclude after installing $atlId" }
