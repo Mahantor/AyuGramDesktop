@@ -473,9 +473,12 @@ win:
     del msys64.exe
 
     bash -c "pacman-key --init; pacman-key --populate; pacman -Syu --noconfirm"
+    pacman -Syu --noconfirm make
+    # Upstream MSYS2 removed mingw-w64-x86_64-diffutils, and a single missing target aborts the
+    # whole transaction. The msys flavour still provides diff; it is optional, so a future removal
+    # must not break the stage again.
+    pacman -Syu --noconfirm diffutils || ver >nul
     pacman -Syu --noconfirm ^
-        make ^
-        mingw-w64-x86_64-diffutils ^
         mingw-w64-x86_64-gperf ^
         mingw-w64-x86_64-nasm ^
         mingw-w64-x86_64-perl ^
