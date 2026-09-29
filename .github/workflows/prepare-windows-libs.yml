@@ -39,26 +39,29 @@ jobs:
       fail-fast: false
       # Sequential on purpose: every group restores the previous group's cache entry and grows it.
       max-parallel: 1
+      # Every name here has to be a stage prepare.py actually registers on Windows: it drops a
+      # stage() whose command block has no win: section, and an unknown argument aborts the run.
+      # The authoritative set (33) is what prepare.py reports when run from a developer prompt.
       matrix:
         include:
           - group: 1-tooling
             stages: patches msys64 python NuGet jom gyp
           - group: 2-base
-            stages: lzma xz zlib mozjpeg openssl3 opus rnnoise libiconv gas-preprocessor
+            stages: lzma zlib mozjpeg openssl3 opus rnnoise gas-preprocessor
           - group: 3-codecs
             stages: dav1d openh264 libavif libde265 libwebp libheif libjxl libvpx liblcms2 nv-codec-headers regex
           - group: 4-ffmpeg
             stages: ffmpeg
           - group: 5-crashreporting
-            # stackwalk is not a stage here: prepare.py only registers it when the
-            # build-stackwalk option is present (macOS path).
-            stages: openal-soft breakpad crashpad
+            # stackwalk and crashpad are not stages here: prepare.py only registers them when the
+            # build-stackwalk option is present or on macOS/Linux.
+            stages: openal-soft breakpad
           # cmd expands %QT%, so the stage name follows the dispatch input without a context that
           # is not available inside the matrix definition.
           - group: 6-qt
             stages: qt_%QT%
           - group: 7-webrtc
-            stages: tg_owt ada protobuf tde2e
+            stages: tg_angle tg_owt ada protobuf tde2e
     name: libs (${{ matrix.group }})
     runs-on: windows-2022
     timeout-minutes: 330
