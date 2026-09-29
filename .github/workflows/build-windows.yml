@@ -100,8 +100,10 @@ jobs:
           foreach ($r in $required) {
             if (-not (Test-Path (Join-Path $win64 $r))) { $missing += $r }
           }
-          if (-not (Test-Path (Join-Path $env:GITHUB_WORKSPACE 'ThirdParty\msys64'))) {
-            $missing += 'ThirdParty\msys64'
+          # msys64 is deliberately not required: only prepare.py consumes it, the Telegram target
+          # does not, and a dependency archive ships without it.
+          if (-not (Test-Path (Join-Path $env:GITHUB_WORKSPACE 'ThirdParty'))) {
+            $missing += 'ThirdParty'
           }
           if ($missing.Count -gt 0) {
             Write-Host "No complete dependency set for this generation (missing: $($missing -join ', '))."
