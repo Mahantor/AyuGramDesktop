@@ -61,15 +61,27 @@ jobs:
       # waiting on hours of "Prepare Windows libraries". Public release assets need no extra token.
       - name: Download prepared libraries
         if: inputs.deps_asset != ''
-        shell: bash
+        shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
+          # Git for Windows ships a GNU tar as /usr/bin/tar and puts it first on PATH under the
+          # bash shell; GNU tar cannot read a zip. The system bsdtar must be named explicitly.
+          BSDTAR: $env:SystemRoot\System32\tar.exe
         run: |
-          mkdir -p "$RUNNER_TEMP/deps"
-          gh release download "${{ inputs.deps_asset }}" --repo "$GITHUB_REPOSITORY" \
-            --pattern '*.zip' --dir "$RUNNER_TEMP/deps"
-          tar -xf "$RUNNER_TEMP/deps"/*.zip -C "$GITHUB_WORKSPACE"
-          ls "$GITHUB_WORKSPACE/Libraries/win64" | head -5
+          $ErrorActionPreference = 'Stop'
+          $deps = Join-Path $env:RUNNER_TEMP 'deps'
+          New-Item -ItemType Directory -Force -Path $deps | Out-Null
+          gh release download '${{ inputs.deps_asset }}' --repo $env:GITHUB_REPOSITORY `
+            --pattern '*.zip' --dir $deps
+          $zip = Get-ChildItem $deps -Filter '*.zip' | Select-Object -First 1
+          if (-not $zip) { throw "no zip asset on release '${{ inputs.deps_asset }}'" }
+          & $env:SystemRoot\System32\tar.exe -xf $zip.FullName -C $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw "tar exited $LASTEXITCODE" }
+          # The archive was written as Libraries/win64/... ; a slip in that layout would otherwise
+          # surface much later as an incomprehensible CMake error.
+          $win64 = Join-Path $env:GITHUB_WORKSPACE 'Libraries\win64'
+          if (-not (Test-Path $win64)) { throw "the archive did not unpack to $win64" }
+          Write-Host ('unpacked ' + ((Get-ChildItem $win64 -Directory).Count) + ' library folders')
 
       - id: cache
         if: inputs.deps_asset == ''
