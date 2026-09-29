@@ -120,6 +120,30 @@ jobs:
 
       # Only a finished group may claim the completion key; a timeout or a failing stage is stored
       # as -partial so the next run restores the tree and retries this group from scratch.
+      - name: Prune build intermediates
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: powershell
+        # Measured on a complete local dependency tree: Libraries/win64 is 19.0 GB while the
+        # linker reads only 2.51 GB from it. The Qt build tree alone (qt_5.15.19) is 8.0 GB and
+        # nothing references it - the installed Qt is Qt-5.15.19 (1.45 GB). Object files, debug
+        # info and the .git stores of the cloned sources add another ~5 GB. Dropping those keeps
+        # the cache under the 10 GB repository quota without losing a single build input.
+        run: |
+          $win64 = Join-Path $env:GITHUB_WORKSPACE 'Libraries\win64'
+          $qtTree = Join-Path $win64 ('qt_' + $env:QT)
+          if (Test-Path $qtTree) {
+            Remove-Item -LiteralPath $qtTree -Recurse -Force
+            Write-Host "removed the Qt build tree: $qtTree"
+          }
+          $drop = @('.obj', '.o', '.pdb', '.ilk', '.exp', '.pch', '.iobj', '.ipdb')
+          $files = Get-ChildItem $win64 -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $drop -contains $_.Extension }
+          $mb = ($files | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host ("pruning {0} intermediate/debug files, {1:N0} MB" -f @($files).Count, $mb)
+          $files | Remove-Item -Force -ErrorAction SilentlyContinue
+          Get-ChildItem $win64 -Recurse -Directory -Force -Filter '.git' -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+
       - name: Save cache (group complete)
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
