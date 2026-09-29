@@ -14,6 +14,10 @@ on:
         description: 'MSVC toolset to prefer'
         required: true
         default: '14.44'
+      deps_asset:
+        description: 'Release tag holding a prepared ayu-win64-libs zip (skips the library cache)'
+        required: false
+        default: ''
   push:
     branches:
       - master
@@ -53,7 +57,22 @@ jobs:
         with:
           toolset: ${{ env.TOOLSET }}
 
+      # A prepared dependency archive attached to a Release is how the very first build avoids
+      # waiting on hours of "Prepare Windows libraries". Public release assets need no extra token.
+      - name: Download prepared libraries
+        if: inputs.deps_asset != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/deps"
+          gh release download "${{ inputs.deps_asset }}" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.zip' --dir "$RUNNER_TEMP/deps"
+          tar -xf "$RUNNER_TEMP/deps"/*.zip -C "$GITHUB_WORKSPACE"
+          ls "$GITHUB_WORKSPACE/Libraries/win64" | head -5
+
       - id: cache
+        if: inputs.deps_asset == ''
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -85,8 +104,9 @@ jobs:
             $missing += 'ThirdParty\msys64'
           }
           if ($missing.Count -gt 0) {
-            Write-Host "No complete library cache for this generation (missing: $($missing -join ', '))."
-            Write-Host 'Run the "Prepare Windows libraries" workflow once, then rerun this workflow.'
+            Write-Host "No complete dependency set for this generation (missing: $($missing -join ', '))."
+            Write-Host 'Either run "Prepare Windows libraries" once, or dispatch this workflow with'
+            Write-Host 'deps_asset set to the release tag that carries the prepared ayu-win64-libs zip.'
             exit 1
           }
           $gb = (Get-ChildItem $win64 -Recurse -File -ErrorAction SilentlyContinue |
