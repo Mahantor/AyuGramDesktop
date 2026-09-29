@@ -1,0 +1,139 @@
+name: Prepare Windows libraries
+
+# Builds the third-party dependencies Telegram Desktop links against
+# (Telegram/build/prepare/win.bat) into <BuildPath>/Libraries/win64 and caches them.
+#
+# Why this is a separate workflow: a cold prepare is one long chain of source builds
+# (Qt, ffmpeg, tg_owt, protobuf, ...). On a 4-core hosted runner that chain does not fit into the
+# 6 h per-job limit, so it is split into ordered groups that run one after another and each grow
+# the same cached tree. Re-running after an interruption resumes: a finished group is skipped, and
+# a failed group was stored under a "-partial" key so the next attempt still restores its output.
+#
+# Run this once per dependency generation, then use "Build Windows" for the executable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      qt_version:
+        description: 'Qt version the prepare script should build'
+        required: true
+        default: '5.15.19'
+      toolset:
+        description: 'MSVC toolset to prefer (14.44 keeps Windows 7 support)'
+        required: true
+        default: '14.44'
+
+concurrency:
+  group: prepare-windows-libs
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  QT: ${{ inputs.qt_version }}
+
+jobs:
+  prepare:
+    strategy:
+      fail-fast: false
+      # Sequential on purpose: every group restores the previous group's cache entry and grows it.
+      max-parallel: 1
+      matrix:
+        include:
+          - group: 1-tooling
+            stages: patches msys64 python NuGet jom gyp
+          - group: 2-base
+            stages: lzma xz zlib mozjpeg openssl3 opus rnnoise libiconv gas-preprocessor
+          - group: 3-codecs
+            stages: dav1d openh264 libavif libde265 libwebp libheif libjxl libvpx liblcms2 nv-codec-headers regex
+          - group: 4-ffmpeg
+            stages: ffmpeg
+          - group: 5-crashreporting
+            # stackwalk is not a stage here: prepare.py only registers it when the
+            # build-stackwalk option is present (macOS path).
+            stages: openal-soft breakpad crashpad
+          # cmd expands %QT%, so the stage name follows the dispatch input without a context that
+          # is not available inside the matrix definition.
+          - group: 6-qt
+            stages: qt_%QT%
+          - group: 7-webrtc
+            stages: tg_owt ada protobuf tde2e
+    name: libs (${{ matrix.group }})
+    runs-on: windows-2022
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve toolset, ATL and the vcvars wrapper
+        id: msvc
+        uses: ./.github/actions/setup-msvc
+        with:
+          toolset: ${{ inputs.toolset }}
+
+      - name: Disk space
+        shell: powershell
+        run: |
+          Get-PSDrive | Where-Object { $_.Name -in 'C', 'D' } |
+            ForEach-Object { Write-Host ('{0}: free {1:N1} GB' -f $_.Name, ($_.Free / 1GB)) }
+
+      - id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          # The full key means "this group and everything before it is built". The toolset comes
+          # from setup-msvc because it can fall back to the installed default.
+          key: ayu-winlibs-${{ env.QT }}-${{ steps.msvc.outputs.toolset }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}-${{ matrix.group }}
+          restore-keys: |
+            ayu-winlibs-${{ env.QT }}-${{ steps.msvc.outputs.toolset }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}-
+
+      - name: Point the parent-of-workspace BuildPath at the cached folders
+        uses: ./.github/actions/buildpath
+        with:
+          action: create
+
+      - name: Build group
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: call "%MSVC_WRAPPER%" cmd /c "Telegram\build\prepare\win.bat silent ${{ matrix.stages }}"
+
+      - name: What the group produced
+        shell: powershell
+        run: |
+          foreach ($d in @('Libraries', 'ThirdParty')) {
+            $p = Join-Path $env:GITHUB_WORKSPACE $d
+            if (Test-Path $p) {
+              $gb = (Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue |
+                Measure-Object Length -Sum).Sum / 1GB
+              Write-Host ('{0,-12} {1,6:N2} GB' -f $d, $gb)
+            }
+          }
+          $win64 = Join-Path $env:GITHUB_WORKSPACE 'Libraries\win64'
+          if (Test-Path $win64) {
+            $names = (Get-ChildItem $win64 -Directory | Select-Object -ExpandProperty Name) -join ' '
+            Write-Host "present: $names"
+          }
+
+      # Only a finished group may claim the completion key; a timeout or a failing stage is stored
+      # as -partial so the next run restores the tree and retries this group from scratch.
+      - name: Save cache (group complete)
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Save cache (partial progress)
+        if: failure()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: ${{ steps.cache.outputs.cache-primary-key }}-partial-${{ github.run_id }}

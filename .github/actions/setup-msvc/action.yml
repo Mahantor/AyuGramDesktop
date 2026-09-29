@@ -1,0 +1,92 @@
+name: Setup MSVC environment
+description: >
+  Selects a Visual Studio 2022 toolset, makes sure its C++ ATL component is installed
+  (breakpad's dump_syms includes atlbase.h) and writes the cmd wrapper the build steps run through.
+
+inputs:
+  toolset:
+    description: 'MSVC toolset version to prefer, e.g. 14.44. Empty means the installed default.'
+    required: false
+    default: '14.44'
+
+outputs:
+  toolset:
+    description: 'The toolset version actually selected (14.44.35207 style)'
+    value: ${{ steps.resolve.outputs.toolset }}
+  wrapper:
+    description: 'Path of the vcvars cmd wrapper'
+    value: ${{ steps.wrapper.outputs.wrapper }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path $vswhere)) { throw "vswhere not found at $vswhere" }
+        $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if (-not $vsRoot) { throw 'no Visual Studio instance with the VC tools component' }
+        $vsVersion = & $vswhere -latest -products * -property installationVersion
+        Write-Host "VS root   : $vsRoot"
+        Write-Host "VS version: $vsVersion"
+
+        $msvcRoot = Join-Path $vsRoot 'VC\Tools\MSVC'
+        $installed = Get-ChildItem $msvcRoot -Directory |
+          Where-Object { Test-Path (Join-Path $_.FullName 'bin\Hostx64\x64\cl.exe') } |
+          Sort-Object Name -Descending
+        if (-not $installed) { throw "no usable MSVC toolset under $msvcRoot" }
+        Write-Host ("installed toolsets: " + (($installed | ForEach-Object { $_.Name }) -join ', '))
+
+        $want = '${{ inputs.toolset }}'
+        $toolset = $installed | Where-Object { $_.Name.StartsWith($want) } | Select-Object -First 1
+        if (-not $toolset) {
+          Write-Warning "toolset v$want is not installed - falling back to $($installed[0].Name)"
+          $toolset = $installed[0]
+        }
+        $toolsetName = $toolset.Name
+        Write-Host "using toolset v$toolsetName"
+
+        # ATL ships per toolset, so its component id carries both the MSVC and the VS version.
+        $atlInclude = Join-Path $toolset.FullName 'atlmfc\include\atlbase.h'
+        if (-not (Test-Path $atlInclude)) {
+          $vs = [version]$vsVersion
+          $atlId = "Microsoft.VisualStudio.Component.VC.$toolsetName.$($vs.Major).$($vs.Minor).ATL"
+          Write-Host "ATL missing for v$toolsetName - installing $atlId"
+          $installer = Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vs_installer.exe'
+          if (-not (Test-Path $installer)) { throw "vs_installer not found: $installer" }
+          $args = @('modify', '--installPath', "`"$vsRoot`"", '--add', $atlId,
+                    '--quiet', '--norestart', '--wait', '--noweb')
+          $proc = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Write-Warning "vs_installer exit code $($proc.ExitCode) - retrying without --noweb"
+            $proc = Start-Process -FilePath $installer `
+              -ArgumentList ($args | Where-Object { $_ -ne '--noweb' }) -Wait -PassThru
+            if ($proc.ExitCode -ne 0) { throw "ATL install failed with exit code $($proc.ExitCode)" }
+          }
+          if (-not (Test-Path $atlInclude)) { throw "still no $atlInclude after installing $atlId" }
+        }
+        Write-Host "ATL ok: $atlInclude"
+
+        "toolset=$toolsetName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        "vsroot=$vsRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+    - id: wrapper
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # prepare.py refuses to run outside a developer environment (it checks %Platform%), and the
+        # generator has to see the same toolset the libraries were built with. Every build step
+        # therefore goes through this wrapper instead of relying on step-level environment vars.
+        $vcvars = Join-Path '${{ steps.resolve.outputs.vsroot }}' 'VC\Auxiliary\Build\vcvars64.bat'
+        $toolset = '${{ steps.resolve.outputs.toolset }}'
+        $wrapper = Join-Path $env:RUNNER_TEMP 'msvc-env.cmd'
+        @(
+          '@echo off',
+          'call "' + $vcvars + '" -vcvars_ver=' + $toolset + ' >nul',
+          'if errorlevel 1 exit /b 1',
+          '%*'
+        ) | Set-Content -LiteralPath $wrapper -Encoding ASCII
+        "wrapper=$wrapper" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        "MSVC_WRAPPER=$wrapper" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

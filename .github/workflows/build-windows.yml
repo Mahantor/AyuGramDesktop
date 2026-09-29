@@ -1,0 +1,128 @@
+name: Build Windows
+
+# Debug x64 executable, built against the cached third-party libraries produced by
+# "Prepare Windows libraries". AGENTS.md forbids Release builds, so this workflow only does Debug.
+
+on:
+  workflow_dispatch:
+    inputs:
+      qt_version:
+        description: 'Qt version the cached libraries were built with'
+        required: true
+        default: '5.15.19'
+      toolset:
+        description: 'MSVC toolset to prefer'
+        required: true
+        default: '14.44'
+  push:
+    branches:
+      - master
+      - dev
+  pull_request:
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  QT: ${{ inputs.qt_version || '5.15.19' }}
+  TOOLSET: ${{ inputs.toolset || '14.44' }}
+  # cl /MP without a count spawns one front-end per core per project; the heavy window/*.cpp
+  # translation units need about 2 GB each, so on the 16 GB hosted runner MSVC dies with
+  # "error C1060: compiler is out of heap space". _CL_MPCount caps /MP, --parallel caps how many
+  # projects build at once.
+  CL_MP: '2'
+  NODES: '2'
+
+jobs:
+  build:
+    name: AyuGram.exe (Debug x64)
+    runs-on: windows-2022
+    timeout-minutes: 330
+    env:
+      # Same generation key as the prepare workflow; TOOLSET is the toolset that was actually
+      # selected, which can fall back to the installed default.
+      CACHE_GEN: ayu-winlibs-${{ env.QT }}-${{ env.TOOLSET }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve toolset, ATL and the vcvars wrapper
+        id: msvc
+        uses: ./.github/actions/setup-msvc
+        with:
+          toolset: ${{ env.TOOLSET }}
+
+      - id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          # The last group of a generation is the complete tree, so an exact hit here means the
+          # libraries need no rebuilding at all.
+          key: ayu-winlibs-${{ env.QT }}-${{ steps.msvc.outputs.toolset }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}-7-webrtc
+          restore-keys: |
+            ayu-winlibs-${{ env.QT }}-${{ steps.msvc.outputs.toolset }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}-
+
+      - name: Reuse the cached libraries for the parent-of-workspace paths
+        uses: ./.github/actions/buildpath
+        with:
+          action: create
+
+      - name: Check the cached libraries are complete
+        shell: powershell
+        run: |
+          $win64 = Join-Path $env:GITHUB_WORKSPACE 'Libraries\win64'
+          $required = @("Qt-$env:QT", 'tg_owt', 'ffmpeg', 'openssl3', 'zlib', 'breakpad',
+                        'protobuf', 'tde2e', 'mozjpeg', 'libvpx')
+          $missing = @()
+          foreach ($r in $required) {
+            if (-not (Test-Path (Join-Path $win64 $r))) { $missing += $r }
+          }
+          if (-not (Test-Path (Join-Path $env:GITHUB_WORKSPACE 'ThirdParty\msys64'))) {
+            $missing += 'ThirdParty\msys64'
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "No complete library cache for this generation (missing: $($missing -join ', '))."
+            Write-Host 'Run the "Prepare Windows libraries" workflow once, then rerun this workflow.'
+            exit 1
+          }
+          $gb = (Get-ChildItem $win64 -Recurse -File -ErrorAction SilentlyContinue |
+            Measure-Object Length -Sum).Sum / 1GB
+          Write-Host ('libraries on disk: {0:N2} GB under Libraries\win64' -f $gb)
+
+      - name: Configure
+        shell: cmd
+        run: >
+          call "%MSVC_WRAPPER%" cmd /c "cd Telegram &&
+          configure.bat x64
+          -D TDESKTOP_API_ID=%TELEGRAM_API_ID%
+          -D TDESKTOP_API_HASH=%TELEGRAM_API_HASH%"
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TDESKTOP_API_ID || '2040' }}
+          TELEGRAM_API_HASH: ${{ secrets.TDESKTOP_API_HASH || 'b18441a1ff607e10a989891a5462e627' }}
+
+      - name: Build Debug
+        shell: cmd
+        run: call "%MSVC_WRAPPER%" cmd /c "set _CL_MPCount=%CL_MP%&& cmake --build out --config Debug --target Telegram --parallel %NODES%"
+
+      - name: Executable
+        shell: powershell
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'out\Debug\AyuGram.exe'
+          if (-not (Test-Path $exe)) { Write-Host "missing $exe"; exit 1 }
+          $i = Get-Item $exe
+          Write-Host ('{0} - {1:N1} MB' -f $i.Name, ($i.Length / 1MB))
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-win64-debug
+          # The executable is ~500 MB of already-compressed code; level 0 is the fastest store.
+          compression-level: 0
+          path: out/Debug/AyuGram.exe
+          if-no-files-found: error

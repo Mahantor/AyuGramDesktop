@@ -1,0 +1,51 @@
+name: Link the BuildPath folders
+description: >
+  prepare.py and configure.py resolve their dependencies as "../Libraries" and "../ThirdParty"
+  relative to the repository, which on a hosted runner is the parent of the checkout - outside
+  everything actions/cache can store. This puts the real folders inside the workspace and reaches
+  them from the parent through junctions (mklink /J needs no elevation).
+
+inputs:
+  action:
+    description: 'create the junctions, or remove them so the folders can be archived'
+    required: true
+    default: 'create'
+
+runs:
+  using: composite
+  steps:
+    - shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $ws = $env:GITHUB_WORKSPACE
+        $parent = Split-Path $ws -Parent
+        $mode = '${{ inputs.action }}'
+        foreach ($d in @('Libraries', 'ThirdParty')) {
+          $inside = Join-Path $ws $d
+          $outside = Join-Path $parent $d
+          $isLink = {
+            param($p)
+            (Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint
+          }
+          if ($mode -eq 'remove') {
+            # Deleting a junction does not touch the folder it points at.
+            if ((Test-Path $outside) -and (& $isLink $outside)) {
+              [IO.Directory]::Delete($outside)
+              Write-Host "removed junction $outside"
+            } elseif (Test-Path $outside) {
+              Write-Warning "$outside is a real folder on this runner - leaving it alone"
+            }
+            continue
+          }
+          if (-not (Test-Path $inside)) { New-Item -ItemType Directory -Path $inside | Out-Null }
+          if (Test-Path $outside) {
+            if (& $isLink $outside) { Write-Host "junction already present: $outside"; continue }
+            # Leftover real folder: move it in so the cached copy is what the build sees.
+            Write-Host "moving existing $outside into the workspace"
+            Get-ChildItem -LiteralPath $outside -Force |
+              Move-Item -Destination $inside -Force
+            Remove-Item -LiteralPath $outside -Recurse -Force
+          }
+          cmd /c mklink /J "`"$outside`"" "`"$inside`"" | Out-Null
+          Write-Host "created junction $outside -> $inside"
+        }
