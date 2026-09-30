@@ -58,10 +58,15 @@ jobs:
             stages: openal-soft breakpad
           # cmd expands %QT%, so the stage name follows the dispatch input without a context that
           # is not available inside the matrix definition.
+          # tg_angle belongs here, not with WebRTC: the Qt configure line adds
+          # -I <tg_angle>/include plus -egl, and Qt's egl precondition
+          # "(features.opengl || openvg) && (features.angle || libs.egl)" fails when those headers
+          # are absent ("WARNING: Using OpenGL ES 2.0 on Windows without ANGLE"). prepare.py runs
+          # the requested stages in registration order, so tg_angle precedes qt_ here too.
           - group: 6-qt
-            stages: qt_%QT%
+            stages: tg_angle qt_%QT%
           - group: 7-webrtc
-            stages: tg_angle tg_owt ada protobuf tde2e
+            stages: tg_owt ada protobuf tde2e
     name: libs (${{ matrix.group }})
     runs-on: windows-2022
     timeout-minutes: 330
