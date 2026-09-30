@@ -42,6 +42,11 @@ jobs:
       # Every name here has to be a stage prepare.py actually registers on Windows: it drops a
       # stage() whose command block has no win: section, and an unknown argument aborts the run.
       # The authoritative set (33) is what prepare.py reports when run from a developer prompt.
+      #
+      # Each group caches the tree of itself and everything before it, so moving a stage between
+      # groups invalidates that group and all later ones: rename their matrix group (keep the last
+      # one in sync with the key in build-windows.yml). A restored exact key skips the build, so an
+      # outdated key would silently hand on a tree missing the moved stage.
       matrix:
         include:
           - group: 1-tooling
@@ -65,7 +70,9 @@ jobs:
           # the requested stages in registration order, so tg_angle precedes qt_ here too.
           - group: 6-qt
             stages: tg_angle qt_%QT%
-          - group: 7-webrtc
+          # -r2: tg_angle left this group for the Qt one, so the tree this key used to describe is
+          # no longer the complete tree; the new suffix orphans that entry instead of restoring it.
+          - group: 7-webrtc-r2
             stages: tg_owt ada protobuf tde2e
     name: libs (${{ matrix.group }})
     runs-on: windows-2022

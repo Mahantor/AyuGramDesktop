@@ -91,8 +91,9 @@ jobs:
             Libraries
             ThirdParty
           # The last group of a generation is the complete tree, so an exact hit here means the
-          # libraries need no rebuilding at all.
-          key: ayu-winlibs-${{ env.QT }}-${{ steps.msvc.outputs.toolset }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}-7-webrtc
+          # libraries need no rebuilding at all. The group suffix has to match the last matrix
+          # group of prepare-windows-libs.yml; rename both together when a stage moves group.
+          key: ayu-winlibs-${{ env.QT }}-${{ steps.msvc.outputs.toolset }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}-7-webrtc-r2
           restore-keys: |
             ayu-winlibs-${{ env.QT }}-${{ steps.msvc.outputs.toolset }}-${{ hashFiles('Telegram/build/prepare/prepare.py', 'Telegram/build/qt_version.py') }}-
 
